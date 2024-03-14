@@ -99,21 +99,22 @@ public final class VendorCommand implements BlazeCommand {
 
     // IS_VENDOR_COMMAND & VENDOR_DIR is already injected in "BazelRepositoryModule", we just need
     // to update this value for the delegator function to recognize this call is from VendorCommand
+    // and to invalidate cache
     env.getSkyframeExecutor()
         .injectExtraPrecomputedValues(
             ImmutableList.of(
-                PrecomputedValue.injected(RepositoryDelegatorFunction.IS_VENDOR_COMMAND, true)));
+                PrecomputedValue.injected(RepositoryDelegatorFunction.IS_VENDOR_COMMAND,
+                    env.getCommandId().toString())));
 
     BlazeCommandResult result;
     VendorOptions vendorOptions = options.getOptions(VendorOptions.class);
-    PathFragment vendorDirectory = options.getOptions(RepositoryOptions.class).vendorDirectory;
     LoadingPhaseThreadsOption threadsOption = options.getOptions(LoadingPhaseThreadsOption.class);
     try {
       env.syncPackageLoading(options);
       if (!vendorOptions.repos.isEmpty()) {
-        result = vendorRepos(env, threadsOption, vendorOptions.repos, vendorDirectory);
+        result = vendorRepos(env, threadsOption, vendorOptions.repos);
       } else {
-        result = vendorAll(env, threadsOption, vendorDirectory);
+        result = vendorAll(env, threadsOption);
       }
     } catch (AbruptExitException e) {
       return createFailedBlazeCommandResult(
@@ -154,7 +155,7 @@ public final class VendorCommand implements BlazeCommand {
   }
 
   private BlazeCommandResult vendorAll(
-      CommandEnvironment env, LoadingPhaseThreadsOption threadsOption, PathFragment vendorDirectory)
+      CommandEnvironment env, LoadingPhaseThreadsOption threadsOption)
       throws InterruptedException, IOException {
     EvaluationContext evaluationContext =
         EvaluationContext.newBuilder()
@@ -171,17 +172,13 @@ public final class VendorCommand implements BlazeCommand {
             env.getReporter(),
             e != null ? e.getMessage() : "Unexpected error during fetching all external deps.");
       }
-
-    BazelFetchAllValue fetchAllValue = (BazelFetchAllValue) evaluationResult.get(fetchKey);
-    vendor(env, vendorDirectory, fetchAllValue.getReposToVendor());
     return BlazeCommandResult.success();
   }
 
   private BlazeCommandResult vendorRepos(
       CommandEnvironment env,
       LoadingPhaseThreadsOption threadsOption,
-      List<String> repos,
-      PathFragment vendorDirectory)
+      List<String> repos)
       throws InterruptedException, IOException {
     ImmutableMap<RepositoryName, RepositoryDirectoryValue> repositoryNamesAndValues;
     try {
@@ -194,20 +191,15 @@ public final class VendorCommand implements BlazeCommand {
     }
 
     // Split repos to found and not found, vendor found ones and report others
-    ImmutableList.Builder<RepositoryName> reposToVendor = ImmutableList.builder();
     List<String> notFoundRepoErrors = new ArrayList<>();
     for (Entry<RepositoryName, RepositoryDirectoryValue> entry :
         repositoryNamesAndValues.entrySet()) {
-      if (entry.getValue().repositoryExists()) {
-        if (!entry.getValue().excludeFromVendoring()) {
-          reposToVendor.add(entry.getKey());
-        }
-      } else {
+      if (!entry.getValue().repositoryExists()) {
         notFoundRepoErrors.add(entry.getValue().getErrorMsg());
       }
     }
 
-    vendor(env, vendorDirectory, reposToVendor.build());
+    //vendor(env, vendorDirectory, reposToVendor.build());
     if (!notFoundRepoErrors.isEmpty()) {
       return createFailedBlazeCommandResult(
           env.getReporter(), "Vendoring some repos failed with errors: " + notFoundRepoErrors);

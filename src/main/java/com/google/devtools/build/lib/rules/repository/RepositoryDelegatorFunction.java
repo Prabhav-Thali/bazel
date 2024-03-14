@@ -25,6 +25,7 @@ import com.google.common.collect.Maps;
 import com.google.devtools.build.lib.actions.FileValue;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.bazel.bzlmod.BzlmodRepoRuleValue;
+import com.google.devtools.build.lib.bazel.bzlmod.RepoToVendorEvent;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.packages.Rule;
@@ -84,7 +85,7 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
   public static final Precomputed<Optional<RootedPath>> RESOLVED_FILE_INSTEAD_OF_WORKSPACE =
       new Precomputed<>("resolved_file_instead_of_workspace");
 
-  public static final Precomputed<Boolean> IS_VENDOR_COMMAND =
+  public static final Precomputed<String> IS_VENDOR_COMMAND =
       new Precomputed<>("is_vendor_command");
 
   public static final Precomputed<Optional<Path>> VENDOR_DIRECTORY =
@@ -184,10 +185,12 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
           return null;
         }
         if (markerHash != null) { // repo exist & up-to-date
+          if(!shouldExcludeRepoFromVendoring(handler, rule)) {
+            env.getListener().post(RepoToVendorEvent.create(repositoryName));
+          }
           return RepositoryDirectoryValue.builder()
               .setPath(repoRoot)
               .setDigest(markerHash)
-              .setExcludeFromVendoring(shouldExcludeRepoFromVendoring(handler, rule))
               .build();
         }
       }
@@ -212,9 +215,11 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
         // restart thus calling the possibly very slow (networking, decompression...) fetch()
         // operation again. So we write the marker file here immediately.
         byte[] digest = digestWriter.writeMarkerFile();
+        if(!shouldExcludeRepoFromVendoring(handler, rule)) {
+          env.getListener().post(RepoToVendorEvent.create(repositoryName));
+        }
         return builder
             .setDigest(digest)
-            .setExcludeFromVendoring(shouldExcludeRepoFromVendoring(handler, rule))
             .build();
       }
 
@@ -238,11 +243,13 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
                           + " update, run the build without the '--nofetch' command line option.",
                       rule.getName())));
 
+      if(!shouldExcludeRepoFromVendoring(handler, rule)) {
+        env.getListener().post(RepoToVendorEvent.create(repositoryName));
+      }
       return RepositoryDirectoryValue.builder()
           .setPath(repoRoot)
           .setFetchingDelayed()
           .setDigest(new Fingerprint().digestAndReset())
-          .setExcludeFromVendoring(shouldExcludeRepoFromVendoring(handler, rule))
           .build();
     }
   }
@@ -267,7 +274,7 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
       }
       // If our repo is up-to-date, or this is an offline build (--nofetch), then the vendored repo
       // is used.
-      if (isVendorRepoUpToDate || (!IS_VENDOR_COMMAND.get(env).booleanValue() && !isFetch.get())) {
+      if (isVendorRepoUpToDate || (IS_VENDOR_COMMAND.get(env).isEmpty() && !isFetch.get())) {
         if (!isVendorRepoUpToDate) { // If the repo is out-of-date, show a warning
           env.getListener()
               .handle(
@@ -280,7 +287,7 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
                           rule.getName())));
         }
         return setupOverride(vendorRepoPath.asFragment(), env, repoRoot, repositoryName.getName());
-      } else if (!IS_VENDOR_COMMAND.get(env).booleanValue()) { // build command & fetch enabled
+      } else if (IS_VENDOR_COMMAND.get(env).isEmpty()) { // build command & fetch enabled
         // We will continue fetching but warn the user that we are not using the vendored repo
         env.getListener()
             .handle(
@@ -543,7 +550,7 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
           new IOException("No MODULE.bazel, REPO.bazel, or WORKSPACE file found in " + destination),
           Transience.PERSISTENT);
     }
-    return RepositoryDirectoryValue.builder().setExcludeFromVendoring(true).setPath(source);
+    return RepositoryDirectoryValue.builder().setPath(source);
   }
 
   // Escape a value for the marker file

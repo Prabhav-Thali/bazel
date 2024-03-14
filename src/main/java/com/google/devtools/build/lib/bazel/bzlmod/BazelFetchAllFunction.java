@@ -88,7 +88,6 @@ public class BazelFetchAllFunction implements SkyFunction {
     }
 
     // 4. Fetch all the collected repos
-    List<RepositoryName> shouldVendor = new ArrayList<>();
     ImmutableSet<SkyKey> repoDelegatorKeys =
         reposToFetch.stream().map(RepositoryDirectoryValue::key).collect(toImmutableSet());
     SkyframeLookupResult repoDirValues = env.getValuesAndExceptions(repoDelegatorKeys);
@@ -98,13 +97,9 @@ public class BazelFetchAllFunction implements SkyFunction {
       if (repoDirValue == null) {
         return null;
       }
-      if (!repoDirValue.excludeFromVendoring()) {
-        shouldVendor.add((RepositoryName) repoDelegatorKey.argument());
-      }
     }
 
-    return BazelFetchAllValue.create(
-        ImmutableList.copyOf(reposToFetch), ImmutableList.copyOf(shouldVendor));
+    return BazelFetchAllValue.create(ImmutableList.copyOf(reposToFetch));
   }
 
 }

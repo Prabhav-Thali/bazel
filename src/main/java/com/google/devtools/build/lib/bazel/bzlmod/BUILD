@@ -114,6 +114,25 @@ java_library(
 )
 
 java_library(
+    name = "vendor_module",
+    srcs = ["VendorModule.java"],
+    deps = [
+        ":common",
+        ":exception",
+        ":resolution",
+        "//src/main/java/com/google/devtools/build/lib:runtime",
+        "//src/main/java/com/google/devtools/build/lib/bazel/commands",
+        "//src/main/java/com/google/devtools/build/lib/bazel/repository:repository_options",
+        "//src/main/java/com/google/devtools/build/lib/cmdline",
+        "//src/main/java/com/google/devtools/build/lib/util:abrupt_exit_exception",
+        "//src/main/java/com/google/devtools/build/lib/vfs",
+        "//third_party:flogger",
+        "//third_party:guava",
+        "//third_party:jsr305",
+    ],
+)
+
+java_library(
     name = "resolution",
     srcs = [
         "AbridgedModule.java",
@@ -140,6 +159,7 @@ java_library(
         "NonRegistryOverride.java",
         "RegistryOverride.java",
         "RepoSpecKey.java",
+        "RepoToVendorEvent.java",
         "SingleExtensionEvalValue.java",
         "SingleExtensionUsagesValue.java",
         "SingleVersionOverride.java",
