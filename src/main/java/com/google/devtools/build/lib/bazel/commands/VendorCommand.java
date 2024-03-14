@@ -13,9 +13,6 @@
 // limitations under the License.
 package com.google.devtools.build.lib.bazel.commands;
 
-import static com.google.common.collect.ImmutableList.toImmutableList;
-import static java.nio.charset.StandardCharsets.UTF_8;
-
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -24,7 +21,6 @@ import com.google.devtools.build.lib.analysis.NoBuildRequestFinishedEvent;
 import com.google.devtools.build.lib.bazel.bzlmod.BazelFetchAllValue;
 import com.google.devtools.build.lib.bazel.commands.RepositoryFetcher.RepositoryFetcherException;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions;
-import com.google.devtools.build.lib.cmdline.LabelConstants;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.Reporter;
@@ -46,20 +42,14 @@ import com.google.devtools.build.lib.skyframe.RepositoryMappingValue.RepositoryM
 import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.InterruptedFailureDetails;
-import com.google.devtools.build.lib.vfs.FileSystemUtils;
-import com.google.devtools.build.lib.vfs.Path;
-import com.google.devtools.build.lib.vfs.PathFragment;
-import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.devtools.build.skyframe.EvaluationContext;
 import com.google.devtools.build.skyframe.EvaluationResult;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.common.options.OptionsParsingResult;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map.Entry;
-import java.util.Objects;
 import javax.annotation.Nullable;
 
 /** Fetches external repositories into a specified directory. */
@@ -122,9 +112,6 @@ public final class VendorCommand implements BlazeCommand {
     } catch (InterruptedException e) {
       return createFailedBlazeCommandResult(
           env.getReporter(), "Vendor interrupted: " + e.getMessage());
-    } catch (IOException e) {
-      return createFailedBlazeCommandResult(
-          env.getReporter(), "Error while vendoring repos: " + e.getMessage());
     }
 
     env.getEventBus()
@@ -156,7 +143,7 @@ public final class VendorCommand implements BlazeCommand {
 
   private BlazeCommandResult vendorAll(
       CommandEnvironment env, LoadingPhaseThreadsOption threadsOption)
-      throws InterruptedException, IOException {
+      throws InterruptedException {
     EvaluationContext evaluationContext =
         EvaluationContext.newBuilder()
             .setParallelism(threadsOption.threads)
@@ -179,7 +166,7 @@ public final class VendorCommand implements BlazeCommand {
       CommandEnvironment env,
       LoadingPhaseThreadsOption threadsOption,
       List<String> repos)
-      throws InterruptedException, IOException {
+      throws InterruptedException {
     ImmutableMap<RepositoryName, RepositoryDirectoryValue> repositoryNamesAndValues;
     try {
       repositoryNamesAndValues = RepositoryFetcher.fetchRepos(repos, env, threadsOption);
@@ -199,83 +186,11 @@ public final class VendorCommand implements BlazeCommand {
       }
     }
 
-    //vendor(env, vendorDirectory, reposToVendor.build());
     if (!notFoundRepoErrors.isEmpty()) {
       return createFailedBlazeCommandResult(
           env.getReporter(), "Vendoring some repos failed with errors: " + notFoundRepoErrors);
     }
     return BlazeCommandResult.success();
-  }
-
-  /**
-   * Copies the fetched repos from the external cache into the vendor directory, unless the repo is
-   * ignored or was already vendored and up-to-date
-   */
-  private void vendor(
-      CommandEnvironment env,
-      PathFragment vendorDirectory,
-      ImmutableList<RepositoryName> reposToVendor)
-      throws IOException {
-    Path vendorPath =
-        vendorDirectory.isAbsolute()
-            ? env.getRuntime().getFileSystem().getPath(vendorDirectory)
-            : env.getWorkspace().getRelative(vendorDirectory);
-    Path externalPath =
-        env.getDirectories()
-            .getOutputBase()
-            .getRelative(LabelConstants.EXTERNAL_REPOSITORY_LOCATION);
-    Path vendorIgnore = vendorPath.getRelative(VENDOR_IGNORE);
-
-    if (!vendorPath.exists()) {
-      vendorPath.createDirectory();
-    }
-
-    // exclude any ignored repo under .vendorignore
-    if (vendorIgnore.exists()) {
-      ImmutableSet<String> ignoredRepos =
-          ImmutableSet.copyOf(FileSystemUtils.readLines(vendorIgnore, UTF_8));
-      reposToVendor =
-          reposToVendor.stream()
-              .filter(repo -> !ignoredRepos.contains(repo.getName()))
-              .collect(toImmutableList());
-    } else {
-      FileSystemUtils.createEmptyFile(vendorIgnore);
-    }
-
-    // Update "out-of-date" repos under the vendor directory
-    for (RepositoryName repo : reposToVendor) {
-      if (!isRepoUpToDate(repo.getName(), vendorPath, externalPath)) {
-        Path repoUnderVendor = vendorPath.getRelative(repo.getName());
-        if (!repoUnderVendor.exists()) {
-          repoUnderVendor.createDirectory();
-        }
-        FileSystemUtils.copyTreesBelow(
-            externalPath.getRelative(repo.getName()), repoUnderVendor, Symlinks.NOFOLLOW);
-        FileSystemUtils.copyFile(
-            externalPath.getChild("@" + repo.getName() + ".marker"),
-            vendorPath.getChild("@" + repo.getName() + ".marker"));
-      }
-    }
-  }
-
-  /**
-   * Returns whether the repo under vendor needs to be updated by comparing its marker file with the
-   * one under /external
-   */
-  private boolean isRepoUpToDate(String repoName, Path vendorPath, Path externalPath)
-      throws IOException {
-    Path vendorMarkerFile = vendorPath.getChild("@" + repoName + ".marker");
-    if (!vendorMarkerFile.exists()) {
-      return false;
-    }
-
-    // Since this runs after BazelFetchAllFunction, its guaranteed that the marker files
-    // under $OUTPUT_BASE/external are up-to-date. We just need to compare it against the marker
-    // under vendor.
-    Path externalMarkerFile = externalPath.getChild("@" + repoName + ".marker");
-    String vendorMarkerContent = FileSystemUtils.readContent(vendorMarkerFile, UTF_8);
-    String externalMarkerContent = FileSystemUtils.readContent(externalMarkerFile, UTF_8);
-    return Objects.equals(vendorMarkerContent, externalMarkerContent);
   }
 
   private static BlazeCommandResult createFailedBlazeCommandResult(

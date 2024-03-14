@@ -36,7 +36,8 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * TODO ....
+ * Module collecting the repositories fetched during this invocation and vendoring
+ * them if this is vendor command
  */
 public class VendorModule extends BlazeModule {
 
