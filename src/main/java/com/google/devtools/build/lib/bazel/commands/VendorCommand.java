@@ -20,12 +20,14 @@ import com.google.devtools.build.lib.analysis.NoBuildEvent;
 import com.google.devtools.build.lib.analysis.NoBuildRequestFinishedEvent;
 import com.google.devtools.build.lib.bazel.bzlmod.BazelFetchAllValue;
 import com.google.devtools.build.lib.bazel.commands.RepositoryFetcher.RepositoryFetcherException;
+import com.google.devtools.build.lib.bazel.commands.TargetFetcher.TargetFetcherException;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
 import com.google.devtools.build.lib.pkgcache.PackageOptions;
+import com.google.devtools.build.lib.query2.cquery.CqueryOptions;
 import com.google.devtools.build.lib.rules.repository.RepositoryDelegatorFunction;
 import com.google.devtools.build.lib.rules.repository.RepositoryDirectoryValue;
 import com.google.devtools.build.lib.runtime.BlazeCommand;
@@ -34,18 +36,19 @@ import com.google.devtools.build.lib.runtime.Command;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.runtime.KeepGoingOption;
 import com.google.devtools.build.lib.runtime.LoadingPhaseThreadsOption;
+import com.google.devtools.build.lib.runtime.commands.TestCommand;
 import com.google.devtools.build.lib.server.FailureDetails;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.FetchCommand.Code;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue;
 import com.google.devtools.build.lib.skyframe.RepositoryMappingValue.RepositoryMappingResolutionException;
-import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.InterruptedFailureDetails;
 import com.google.devtools.build.skyframe.EvaluationContext;
 import com.google.devtools.build.skyframe.EvaluationResult;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
+import com.google.devtools.common.options.OptionsParser;
 import com.google.devtools.common.options.OptionsParsingResult;
 import java.util.ArrayList;
 import java.util.List;
@@ -55,18 +58,31 @@ import javax.annotation.Nullable;
 /** Fetches external repositories into a specified directory. */
 @Command(
     name = VendorCommand.NAME,
+    builds = true,
+    inherits = {TestCommand.class},
     options = {
-      VendorOptions.class,
-      PackageOptions.class,
-      KeepGoingOption.class,
-      LoadingPhaseThreadsOption.class
+        VendorOptions.class,
+        CqueryOptions.class,
+        PackageOptions.class,
+        KeepGoingOption.class,
+        LoadingPhaseThreadsOption.class
     },
+    allowResidue = true,
+    usesConfigurationOptions = true,
     help = "resource:vendor.txt",
     shortDescription =
         "Fetches external repositories into a specific folder specified by the flag "
             + "--vendor_dir.")
 public final class VendorCommand implements BlazeCommand {
   public static final String NAME = "vendor";
+
+  @Override
+  public void editOptions(OptionsParser optionsParser) {
+    // We only need to inject these options with fetch target (when there is a residue)
+    if (!optionsParser.getResidue().isEmpty()) {
+      TargetFetcher.injectOptionsToFetchTarget(optionsParser);
+    }
+  }
 
   @Override
   public BlazeCommandResult exec(CommandEnvironment env, OptionsParsingResult options) {
@@ -97,15 +113,13 @@ public final class VendorCommand implements BlazeCommand {
     VendorOptions vendorOptions = options.getOptions(VendorOptions.class);
     LoadingPhaseThreadsOption threadsOption = options.getOptions(LoadingPhaseThreadsOption.class);
     try {
-      env.syncPackageLoading(options);
-      if (!vendorOptions.repos.isEmpty()) {
+      if (!options.getResidue().isEmpty()) {
+        result = vendorTargets(env, options, options.getResidue());
+      } else if (!vendorOptions.repos.isEmpty()) {
         result = vendorRepos(env, threadsOption, vendorOptions.repos);
       } else {
         result = vendorAll(env, threadsOption);
       }
-    } catch (AbruptExitException e) {
-      return createFailedBlazeCommandResult(
-          env.getReporter(), e.getMessage(), e.getDetailedExitCode());
     } catch (InterruptedException e) {
       return createFailedBlazeCommandResult(
           env.getReporter(), "Vendor interrupted: " + e.getMessage());
@@ -150,19 +164,33 @@ public final class VendorCommand implements BlazeCommand {
     SkyKey fetchKey = BazelFetchAllValue.key(/* configureEnabled= */ false);
     EvaluationResult<SkyValue> evaluationResult =
         env.getSkyframeExecutor().prepareAndGet(ImmutableSet.of(fetchKey), evaluationContext);
-      if (evaluationResult.hasError()) {
-        Exception e = evaluationResult.getError().getException();
-        return createFailedBlazeCommandResult(
-            env.getReporter(),
-            e != null ? e.getMessage() : "Unexpected error during fetching all external deps.");
-      }
+    if (evaluationResult.hasError()) {
+      Exception e = evaluationResult.getError().getException();
+      return createFailedBlazeCommandResult(
+          env.getReporter(),
+          e != null ? e.getMessage() : "Unexpected error during fetching all external deps.");
+    }
+    return BlazeCommandResult.success();
+  }
+
+  private BlazeCommandResult vendorTargets(
+      CommandEnvironment env, OptionsParsingResult options, List<String> targets)
+      throws InterruptedException {
+    try {
+      TargetFetcher.fetchTargets(env, options, targets);
+    } catch (TargetFetcherException e) {
+      return createFailedBlazeCommandResult(
+          env.getReporter(), Code.QUERY_EVALUATION_ERROR, e.getMessage());
+    } catch (RepositoryMappingResolutionException e) {
+      return createFailedBlazeCommandResult(
+          env.getReporter(), e.getMessage(), e.getDetailedExitCode());
+    }
+
     return BlazeCommandResult.success();
   }
 
   private BlazeCommandResult vendorRepos(
-      CommandEnvironment env,
-      LoadingPhaseThreadsOption threadsOption,
-      List<String> repos)
+      CommandEnvironment env, LoadingPhaseThreadsOption threadsOption, List<String> repos)
       throws InterruptedException {
     ImmutableMap<RepositoryName, RepositoryDirectoryValue> repositoryNamesAndValues;
     try {
@@ -174,7 +202,6 @@ public final class VendorCommand implements BlazeCommand {
       return createFailedBlazeCommandResult(env.getReporter(), e.getMessage());
     }
 
-    // Split repos to found and not found, vendor found ones and report others
     List<String> notFoundRepoErrors = new ArrayList<>();
     for (Entry<RepositoryName, RepositoryDirectoryValue> entry :
         repositoryNamesAndValues.entrySet()) {

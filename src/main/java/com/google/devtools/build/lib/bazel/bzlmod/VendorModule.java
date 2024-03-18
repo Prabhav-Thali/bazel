@@ -84,13 +84,12 @@ public class VendorModule extends BlazeModule {
                 .filter(repo -> !ignoredRepos.contains(repo.getName()))
                 .collect(toImmutableList());
       } else {
-        //TODO add a comment at the top of this file explaining what it does
         FileSystemUtils.createEmptyFile(vendorIgnore);
       }
 
       // Update "out-of-date" repos under the vendor directory
       for (RepositoryName repo : reposToVendor) {
-        // TODO do we actually need this check? since we should only get here if the repo doesn't
+        // TODO(salmasamy) do we actually need this check? since we should only get here if the repo doesn't
         // exist under vendor or out-of-date!
         if (!isRepoUpToDate(repo.getName(), vendorPath, externalPath)) {
           Path repoUnderVendor = vendorPath.getRelative(repo.getName());
